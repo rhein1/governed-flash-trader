@@ -12,7 +12,9 @@ import { publishSignal, readFeed } from "../src/leader.js";
 import { followSignal } from "../src/follower.js";
 import { loadStore, saveStore, recordDecision } from "../src/store.js";
 import { createPaperClient } from "../src/paper.js";
-import { getQuote, submitOrder } from "../src/flash.js";
+import { createClient } from "../src/runner.js";
+import { runPersonas } from "../src/personas.js";
+import { updateBlotter, BLOTTER_DISCLAIMER } from "../src/blotter.js";
 
 const WETH_BASE = "0x4200000000000000000000000000000000000006";
 const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
@@ -31,27 +33,14 @@ function readJson(p) {
 }
 
 function liveClientOrRefuse() {
-  if (!has("--live")) return { client: createPaperClient(), mode: "paper" };
-  const apiKey = process.env.FLASH_API_KEY;
-  if (!apiKey || apiKey.includes("REPLACE_ME")) {
-    console.error(
-      "live mode refused: set FLASH_API_KEY (see .env.example). Paper mode needs nothing."
-    );
+  // Shared with bin/gft-runner.js: paper default; --live needs FLASH_API_KEY
+  // and stays quote-only (src/flash.js submitOrder refuses without a wallet).
+  try {
+    return createClient({ live: has("--live") });
+  } catch (err) {
+    console.error(`gft: ${err.message}`);
     process.exit(2);
   }
-  const client = {
-    mode: "live",
-    // getFill is intentionally null: fill/settlement inspection is out of
-    // scope for the hackathon build; the quote+submit receipts still record
-    // authorization -> signature -> submission separately.
-    getFill: null,
-    getQuote: (orderRequest) => getQuote({ apiKey, orderRequest }),
-    // Live submit is quote-only in this build: src/flash.js submitOrder
-    // refuses without a funder wallet (LIVE_SUBMIT_UNAVAILABLE). The refusal
-    // is recorded as a submission-stage receipt, never silently skipped.
-    submitOrder: (orderRequest, quoteId) => submitOrder({ orderRequest, quoteId }),
-  };
-  return { client, mode: "live" };
 }
 
 async function cmdLeaderPublish() {
@@ -194,8 +183,68 @@ async function runDemo() {
   console.log("  paper mode: 0 credentials, 0 network calls, 0 dollars moved.");
 }
 
+async function cmdBlotterUpdate() {
+  const storePath = arg("--store", "./store.json");
+  const blotterPath = arg("--blotter", "./blotter.jsonl");
+  const snapshot = await updateBlotter({ storePath, blotterPath });
+  console.log(`blotter: ${snapshot.positions.length} position(s) marked, ` +
+    `total unrealized P&L $${snapshot.totals.totalPnlUsd} ` +
+    `(${snapshot.skipped.length} skipped)`);
+  for (const p of snapshot.positions) {
+    const sign = p.pnlUsd >= 0 ? "+" : "";
+    console.log(`  ${p.direction} ${p.orderType} ${p.asset.slice(0, 14)}… ` +
+      `entry $${p.entryPx} -> mark $${p.markPx}  P&L ${sign}$${p.pnlUsd} (${sign}${(p.pnlPct * 100).toFixed(2)}%)`);
+  }
+  for (const s of snapshot.skipped) {
+    console.log(`  skipped ${s.orderId ?? s.signalId}: ${s.reason}`);
+  }
+  console.log(`disclaimer: ${BLOTTER_DISCLAIMER}`);
+  console.log(`appended to ${blotterPath}`);
+}
+
+// ---------------------------------------------------------------------------
+// Personas demo: one leader signal, three follower mandates, side by side.
+// Deterministic: fixed clock, paper client, no network, no keys.
+// ---------------------------------------------------------------------------
+async function runPersonasDemo() {
+  const { signal, results, leaderUrl } = await runPersonas();
+
+  banner("PERSONAS — one leader signal, three followers, side by side");
+  console.log(`  leader A2A: ${leaderUrl} (card at /.well-known/agent-card.json, protocol 0.3.0)`);
+  console.log(`  signal: ${signal.strategy.toUpperCase()} ${signal.orderSide} WETH $${signal.notionalUsd} ` +
+    `(leader-mara, ${signal.params.twapBucketCount} slices over ${signal.params.durationSeconds / 3600}h)`);
+  console.log(`  rationale: "${signal.rationale}"`);
+  console.log(`  each follower discovered the leader via the agent card and fetched the signal over A2A`);
+  console.log("");
+
+  for (const { name, tagline, receipt, gateResult } of results) {
+    const r = receipt;
+    const verdict =
+      r.outcome === "settled" ? "COPIED  " : r.outcome === "blocked" ? "BLOCKED " : "FAILED  ";
+    console.log(`  [${name}] ${verdict} ${tagline}`);
+    console.log(`    outcome : ${r.outcome} (receipt ${r.receiptId})`);
+    const fork = r.evidence?.riskFork;
+    if (fork) console.log(`    risk-fork: ${fork.runId} -> ${fork.terminalState} (${fork.events} events, chain ${fork.chainHead.slice(0, 20)}...)`);
+    if (r.outcome === "blocked") {
+      console.log(`    evidence: not_submitted ${JSON.stringify(r.stages.authorization.reasons)}`);
+    } else {
+      const orders = r.stages.submission.orders.map((o) => `${o.orderType}:${o.orderId.slice(-8)}`).join(", ");
+      console.log(`    orders  : ${orders}`);
+      if (gateResult.protectionAttached) {
+        console.log(`    protection: stop-loss auto-attached from mandate (paper-simulated)`);
+      } else {
+        console.log(`    protection: none required by mandate`);
+      }
+    }
+    console.log("");
+  }
+  console.log("  Same signal, three mandates, three fates — the fork-before-risk gate decides before any signing.");
+}
+
 async function main() {
-  if (cmd === "demo") return runDemo();
+  if (cmd === "demo" && !sub) return runDemo();
+  if (cmd === "demo" && sub === "personas") return runPersonasDemo();
+  if (cmd === "blotter" && sub === "update") return cmdBlotterUpdate();
   if (cmd === "leader" && sub === "publish") return cmdLeaderPublish();
   if (cmd === "follower" && sub === "follow") return cmdFollowerFollow();
   if (cmd === "receipts") return cmdReceipts();
@@ -203,7 +252,7 @@ async function main() {
     for (const s of readFeed(arg("--feed", "./feed.jsonl"))) console.log(`${s.id} ${s.leaderId} ${s.strategy} ${s.targetAsset} $${s.notionalUsd}`);
     return;
   }
-  console.error("usage: gft demo | leader publish | follower follow | feed | receipts");
+  console.error("usage: gft demo [personas] | leader publish | follower follow | feed | receipts | blotter update");
   process.exit(1);
 }
 

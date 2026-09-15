@@ -1,13 +1,15 @@
 // Follower agent: copies a leader signal through the governed pipeline.
 //
-//   signal -> gate (fork-before-risk) -> [block: not_submitted receipt]
-//                                     -> [allow: quote -> submit -> (protection leg) -> receipt]
+//   signal -> risk-fork (fork state) -> mandate gate -> [block: not_submitted receipt]
+//                                                      -> [allow: clean commit -> quote -> submit -> (protection leg) -> receipt]
 //
-// The gate runs on cloned state before ANY signing or submission. A block
-// means the Flash client is never invoked — enforced by construction, and
-// asserted in tests with a spy client.
+// The fork runs on cloned state before ANY signing or submission, enforced
+// by the real Agoragentic Risk Fork lifecycle contract (src/fork-gate.js,
+// vendored from @agoragentic/risk-fork). A block means the fork is aborted
+// and destroyed and the Flash client is never invoked — enforced by
+// construction, and asserted in tests with a spy client.
 
-import { evaluateGate } from "./gate.js";
+import { runForkedGate, forkEvidence } from "./fork-gate.js";
 import { buildOrderRequest } from "./flash.js";
 import { paperReferencePrice } from "./paper.js";
 import { mintBlockedReceipt, mintSettledReceipt, mintFailedReceipt } from "./receipts.js";
@@ -15,28 +17,32 @@ import { isConsumed, spentTodayUsd } from "./store.js";
 
 export async function followSignal({ signal, mandate, store, client, mode, now = new Date() }) {
   const consumedIds = Object.keys(store.consumed);
-  const gateResult = evaluateGate({
+  // Fork-before-risk: the gate evaluates against a cloned fork, never
+  // caller state, and before any client invocation. Execution proceeds only
+  // when the fork clean-commits an allow decision.
+  const { lifecycle, gateResult, decision } = runForkedGate({
     signal,
     mandate,
     context: {
-      now,
       spentTodayUsd: spentTodayUsd(store, now, mandate.followerId),
       consumedSignalIds: consumedIds,
     },
     referencePriceUsd: paperReferencePrice(signal.chain, signal.targetAsset),
+    now,
   });
+  const fork = forkEvidence(lifecycle);
 
-  if (gateResult.decision === "block") {
-    return { receipt: mintBlockedReceipt({ signal, mandate, gateResult, mode }), gateResult };
+  if (decision === "block") {
+    return { receipt: mintBlockedReceipt({ signal, mandate, gateResult, mode, fork }), gateResult, lifecycle };
   }
 
   try {
     const legs = await executeAllowed({ signal, mandate, gateResult, client, mode });
-    const receipt = mintSettledReceipt({ signal, mandate, gateResult, mode, execution: { legs } });
-    return { receipt, gateResult };
+    const receipt = mintSettledReceipt({ signal, mandate, gateResult, mode, execution: { legs }, fork });
+    return { receipt, gateResult, lifecycle };
   } catch (error) {
-    const receipt = mintFailedReceipt({ signal, mandate, gateResult, mode, stage: "submission", error });
-    return { receipt, gateResult, error };
+    const receipt = mintFailedReceipt({ signal, mandate, gateResult, mode, stage: "submission", error, fork });
+    return { receipt, gateResult, lifecycle, error };
   }
 }
 

@@ -1,4 +1,41 @@
-# Demo walkthrough — governed-flash-trader (2–3 minutes)
+# Demo walkthrough — governed-flash-trader
+
+## Recommended 2-minute video: the personas demo
+
+**The one to film.** One command, no keys, no network, fully deterministic:
+
+```bash
+node bin/gft.js demo personas
+```
+
+One leader signal — a **TWAP buy WETH, $500 notional, six slices over one
+hour** — and three followers with three mandates, side by side:
+
+| follower | mandate | fate |
+|---|---|---|
+| **degen** | high caps, protection not required | **COPIED** — fork clean-committed |
+| **conservative** | $100 per-trade cap | **BLOCKED** — `over_max_spend_per_trade`, fork destroyed, zero Flash calls |
+| **whale** | requires stop-loss | **COPIED** — stop-loss auto-attached from the mandate (paper-simulated) |
+
+What the video shows on screen:
+
+1. **A discoverable leader.** Each follower fetches the leader's A2A agent
+   card (`/.well-known/agent-card.json`, protocol 0.3.0) and calls
+   `getSignals` via JSON-RPC — the social layer is real discovery, not a
+   function call.
+2. **The fork-before-risk gate, enforced by the real contract.** Every
+   receipt carries `risk-fork: follow-sig-…-follower-… → COMMITTED /
+   DESTROYED` with the event count and chain-head hash — the Agoragentic
+   Risk Fork lifecycle (`@agoragentic/risk-fork`, vendored), clone-state-never-authority.
+3. **The money shot:** the same signal copies for two followers and is
+   blocked for the third — same signal, three mandates, three fates.
+
+The six-act scripted walkthrough below (`npm run demo`) is the deeper
+cut for a README read; the personas demo is the 2-minute screen capture.
+
+---
+
+# Six-act walkthrough (deeper cut)
 
 One command, no keys, no network, fully deterministic:
 

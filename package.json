@@ -1,1 +1,32 @@
-{"bin":{"gft":"./bin/gft.js"},"description":"Governed social/copy-trading agent on Definitive Flash. Followers get a governed trader, not a blank check: every followed signal passes a fork-before-risk mandate gate before any signing or submission.","engines":{"node":">=20"},"keywords":["definitive","flash","copy-trading","social-trading","ai-agents","defi","runtime-nyc"],"license":"MIT","name":"governed-flash-trader","repository":{"type":"git","url":"https://github.com/rhein1/governed-flash-trader.git"},"scripts":{"demo":"node bin/gft.js demo","test":"node --test \"test/*.test.js\""},"type":"module","version":"0.1.0"}
+{
+  "bin": {
+    "gft": "./bin/gft.js",
+    "gft-runner": "./bin/gft-runner.js"
+  },
+  "description": "Governed social/copy-trading agent on Definitive Flash. Followers get a governed trader, not a blank check: every followed signal passes a fork-before-risk mandate gate before any signing or submission.",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "definitive",
+    "flash",
+    "copy-trading",
+    "social-trading",
+    "ai-agents",
+    "defi",
+    "runtime-nyc"
+  ],
+  "license": "MIT",
+  "name": "governed-flash-trader",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rhein1/governed-flash-trader.git"
+  },
+  "scripts": {
+    "demo": "node bin/gft.js demo",
+    "test": "node --test \"test/*.test.js\"",
+    "runner": "node bin/gft-runner.js"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

@@ -17,7 +17,7 @@ export function newReceiptId() {
   return `rcpt-${Date.now().toString(36)}-${String(seq).padStart(3, "0")}`;
 }
 
-export function mintBlockedReceipt({ signal, mandate, gateResult, mode }) {
+export function mintBlockedReceipt({ signal, mandate, gateResult, mode, fork = null }) {
   return Object.freeze({
     receiptId: newReceiptId(),
     signalId: signal.id,
@@ -45,11 +45,12 @@ export function mintBlockedReceipt({ signal, mandate, gateResult, mode }) {
         reasons: gateResult.reasons,
         checks: gateResult.checks.map((c) => ({ name: c.name, pass: c.pass })),
       }),
+      ...(fork ? { riskFork: fork } : {}),
     }),
   });
 }
 
-export function mintSettledReceipt({ signal, mandate, gateResult, mode, execution }) {
+export function mintSettledReceipt({ signal, mandate, gateResult, mode, execution, fork = null }) {
   // execution: { legs: [{ orderRequest, quote, orderId, fill, signatureId }] }
   return Object.freeze({
     receiptId: newReceiptId(),
@@ -78,8 +79,17 @@ export function mintSettledReceipt({ signal, mandate, gateResult, mode, executio
       }),
       submission: Object.freeze({
         status: "submitted",
+        // Order entries carry the v1 quote-request fields per leg so later
+        // readers (e.g. the blotter) can reconstruct positions without
+        // re-deriving intent. Fills stay parallel in settlement.fills.
         orders: execution.legs.map((l) => ({
           orderType: l.orderRequest.orderType,
+          side: l.orderRequest.side,
+          targetChain: l.orderRequest.targetChain,
+          contraChain: l.orderRequest.contraChain,
+          targetAsset: l.orderRequest.targetAsset,
+          contraAsset: l.orderRequest.contraAsset,
+          qty: l.orderRequest.qty,
           quoteId: l.quoteId,
           orderId: l.orderId,
         })),
@@ -89,11 +99,13 @@ export function mintSettledReceipt({ signal, mandate, gateResult, mode, executio
         fills: execution.legs.map((l) => l.fill),
       }),
     }),
-    evidence: Object.freeze({}),
+    evidence: Object.freeze({
+      ...(fork ? { riskFork: fork } : {}),
+    }),
   });
 }
 
-export function mintFailedReceipt({ signal, mandate, gateResult, mode, stage, error }) {
+export function mintFailedReceipt({ signal, mandate, gateResult, mode, stage, error, fork = null }) {
   return Object.freeze({
     receiptId: newReceiptId(),
     signalId: signal.id,
@@ -111,6 +123,7 @@ export function mintFailedReceipt({ signal, mandate, gateResult, mode, stage, er
     }),
     evidence: Object.freeze({
       notSubmitted: Object.freeze({ failedAt: stage, error: String(error?.message ?? error) }),
+      ...(fork ? { riskFork: fork } : {}),
     }),
   });
 }

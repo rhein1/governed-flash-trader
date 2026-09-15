@@ -100,6 +100,7 @@ export function canonicalSignal(s) {
       strategy: s.strategy,
       notionalUsd: String(s.notionalUsd),
       params: s.params,
+      rationale: s.rationale,
       issuedAt: s.issuedAt,
       expiresAt: s.expiresAt,
     })

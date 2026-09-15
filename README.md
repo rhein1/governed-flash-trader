@@ -13,9 +13,10 @@ Submission deadline: **Saturday, September 19, 2026, 4 PM EDT**.
 ## Paper quickstart (no keys, no network, no money)
 
 ```bash
-npm install        # zero runtime dependencies
-npm test           # 40 tests, all green
+npm install        # no npm runtime dependencies (the one external module is vendored, not installed)
+npm test           # 69 tests, all green
 npm run demo       # scripted 6-act walkthrough: 1 approval, 4 blocks
+node bin/gft.js demo personas   # 2-minute social-trading demo: 1 signal, 3 followers via A2A
 ```
 
 The demo is fully deterministic: fixed clock, deterministic paper venue, fixed
@@ -124,6 +125,66 @@ A mandate (`src/mandate.js`) is the follower's standing instruction:
 The gate additionally enforces signal expiry, replay protection, and strategy
 support — nine check families total, all reported per-check on the receipt.
 
+## Governance: fork-before-risk, enforced by the real contract
+
+The follower gate is not hand-rolled plumbing. Every signal is evaluated
+through the **actual Agoragentic Risk Fork lifecycle contract**
+(`@agoragentic/risk-fork` v0.1.0-alpha.1), vendored under
+`vendor/risk-fork/` (the package is not on npm; a `file:` dependency would
+break public clones — see `vendor/risk-fork/VENDOR.md` for the provenance
+note and the tradeoff).
+
+What the contract enforces (`src/fork-gate.js`):
+
+1. **Fork state before risk** — the signal, mandate, and spend context are
+   deep-cloned into a savepoint capsule; the gate runs only on the clone.
+2. **Mandate checked before client invocation** — the lifecycle only reaches
+   `COMMITTED` on an allow decision. On block the fork transitions
+   `EXECUTING → ABORTING → DESTROYED` and the Flash client is never
+   invoked — enforced by construction (tests assert a spy client receives
+   zero calls on blocked signals).
+3. **Bounded evidence** — every receipt carries `evidence.riskFork`
+   (`runId`, terminal state, event count, chain-head hash), and each
+   lifecycle transition is hash-chained and verifiable with the package's
+   own `verifyLifecycle`.
+
+The invariant is Agoragentic's: **clone state, never authority**. The
+package supplies the enforcement contract, not new trading logic — the
+decision semantics (copy / block / attach-protection) are unchanged.
+
+**Claim boundary (read this):** Risk Fork is an *experimental*
+fork-before-risk contract with bounded evidence. This integration does
+**not** claim production containment, live protection, or the ability to
+undo an external action. It proves a governed decision pipeline with
+cryptographically chained evidence — nothing more.
+
+## Social layer: a discoverable leader (A2A)
+
+The leader is a discoverable agent, not just a file:
+
+- **Agent card** (`a2a/agent-card.json`, A2A protocol v0.3.0): name,
+  description, skills (`publish-signal`), endpoints, authentication: none.
+  Pattern mirrors the Agoragentic card at
+  `agoragentic.com/.well-known/agent-card.json`.
+- **Local A2A surface** (`src/a2a.js`): `GET /.well-known/agent-card.json`
+  and JSON-RPC `getSignals` / `getSignal` over plain HTTP.
+
+```bash
+# Serve the leader surface locally (loopback only):
+node bin/gft-runner.js --a2a-port 8787 --feed ./feed.jsonl
+
+# Fetch the card:
+curl http://127.0.0.1:8787/.well-known/agent-card.json
+```
+
+This is a **local reference implementation, not a hosted multi-tenant
+service** — it binds `127.0.0.1` only and serves the local feed. The
+three persona followers (`degen`, `conservative`, `whale`) discover the
+leader through its card and fetch signals via `getSignals`; the persona
+path never hardcodes a feed path. `node bin/gft.js demo personas` runs
+the whole thing — one leader signal, three mandates, three fates — in
+about two minutes, fully deterministic in paper mode.
+
 ## Live setup
 
 Live mode is **opt-in, fail-closed, and quote-only**:
@@ -162,14 +223,26 @@ src/
   signal.js    leader signal model + validation + canonical form
   mandate.js   follower mandate model + validation
   gate.js      pure fork-before-risk mandate gate (no I/O, no authority)
+  fork-gate.js gate wired through the real Risk Fork lifecycle contract
   flash.js     Definitive Flash v1 REST client (api-key header, quote/status/cancel, order builders)
   paper.js     deterministic paper venue (same client interface, zero network)
   leader.js    signal publishing to a local JSONL feed
-  follower.js  follow pipeline: gate -> quote -> sign -> submit -> receipt
+  follower.js  follow pipeline: fork -> gate -> quote -> sign -> submit -> receipt
+  runner.js    continuous follower: tails the feed, persists cursor + stats
+  personas.js  three follower personas, discovering the leader via A2A
+  blotter.js   paper blotter: marks settled positions against live quotes
+  a2a.js       local A2A leader surface: agent card + getSignals JSON-RPC
   receipts.js  four-stage receipts + not_submitted evidence
   store.js     idempotency + spend store (atomic JSON)
-bin/gft.js     CLI: demo | leader publish | follower follow | feed | receipts
-test/          45 tests (node:test, zero dependencies)
+vendor/
+  risk-fork/   vendored @agoragentic/risk-fork@0.1.0-alpha.1 lifecycle
+               contracts (canonical.mjs, constants.mjs, util.mjs,
+               lifecycle.mjs) + LICENSE/NOTICE/VENDOR.md — not on npm
+a2a/
+  agent-card.json  A2A protocol v0.3.0 leader agent card
+bin/gft.js     CLI: demo [personas] | leader publish | follower follow | feed | receipts | blotter update
+bin/gft-runner.js  continuous runner, with optional --a2a-port A2A surface
+test/          69 tests (node:test; no test frameworks, no npm test deps)
 examples/      sample signal + mandate
 ```
 

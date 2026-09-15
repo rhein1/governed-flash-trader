@@ -28,27 +28,29 @@ export function paperReferencePrice(chain, targetAsset) {
 }
 
 // Deterministic quote: price wobbles ±0.5% off the reference by request hash.
+// Field names follow the Flash v1 quote request (targetChain, orderType,
+// side) — the same shape buildOrderRequest() produces.
 export function paperQuote(orderRequest) {
-  const ref = paperReferencePrice(orderRequest.chain, orderRequest.targetAsset);
+  const ref = paperReferencePrice(orderRequest.targetChain, orderRequest.targetAsset);
   const wobbleBps = hashInt({ q: "quote", orderRequest }, 100) - 50; // -50..+49 bps
   const price = ref * (1 + wobbleBps / 10000);
   const notional = Number(orderRequest.qty);
   const amountOut = (notional / price).toFixed(8);
   return {
     quote: {
-      type: orderRequest.type,
-      chain: orderRequest.chain,
+      orderType: orderRequest.orderType,
+      targetChain: orderRequest.targetChain,
       targetAsset: orderRequest.targetAsset,
       contraAsset: orderRequest.contraAsset,
       qty: orderRequest.qty,
-      orderSide: orderRequest.orderSide,
+      side: orderRequest.side,
       quote: {
         id: `paper-quote-${hash12({ q: "id", orderRequest })}`,
         amountOut,
         price,
         priceImpact: (hashInt({ q: "pi", orderRequest }, 50) / 10000).toFixed(4),
       },
-      slippageTolerance: orderRequest.slippageTolerance,
+      slippageTolerance: orderRequest.maxSlippage,
     },
   };
 }

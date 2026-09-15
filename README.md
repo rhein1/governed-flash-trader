@@ -211,6 +211,27 @@ fall back to its deterministic reference price, but live mode will not invent a
 price. No trades, funding, or wallet operations happen in this repo's paper
 path; live quotes are the owner's explicit, credentialed action.
 
+## Paper blotter (paper fills, live prices, no funds)
+
+Settled **paper** positions can be marked to **live** Flash v1 quotes:
+
+```bash
+node bin/gft.js blotter update --store store.json --blotter blotter.jsonl
+```
+
+Each run appends one JSONL snapshot: every position re-valued at a live
+reverse-side quote (longs marked on a live sell quote, shorts on a live buy
+quote), unrealized P&L in USD, and positions whose quote fails listed under
+`skipped` — never dropped silently. Every snapshot carries the disclaimer
+`paper fills marked at live quoted prices — no real funds moved`.
+
+No key of yours is needed: the blotter defaults to Definitive's published
+public dev key (the same one the official `@definitive-fi/flash-mcp` server
+uses when no key is configured — quote-only, rate-limited, cannot trade);
+set `FLASH_API_KEY` to use your own. Run it on a cadence (e.g. every 15 min
+alongside the runner) to build a mark-to-market track record. Paper fills,
+real prices, zero dollars moved — the labels say exactly that.
+
 ## X post
 
 Submission requires an X post tagging `@DefinitiveFi` with its URL in the

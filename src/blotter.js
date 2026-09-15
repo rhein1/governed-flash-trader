@@ -12,6 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { loadStore } from "./store.js";
 import { getQuote } from "./flash.js";
 
@@ -48,10 +49,18 @@ export function paperPositions(store) {
         continue;
       }
       const entryPx = Number(fill?.price);
-      // Buy legs: units = target units received. Sell legs: units = target
-      // units spent (the position size). Both from evidence, never guessed.
-      const units = order.side === "buy" ? Number(fill?.qtyOut) : Number(order.qty);
-      if (!fill || !(entryPx > 0) || !(units > 0)) {
+      // Paper receipts denominate order.qty in USD notional (spent on a buy,
+      // received on a sell). Units below are always target-asset units:
+      //   buy  -> target units received (fill.qtyOut)
+      //   sell -> target units the notional represents (notional / entry price)
+      // A sell's fill.qtyOut is contra units (proceeds), never position size.
+      const entryNotionalUsd = Number(order.qty);
+      if (!fill || !(entryPx > 0) || !(entryNotionalUsd > 0)) {
+        skipped.push({ ...ctx, reason: "no entry fill" });
+        continue;
+      }
+      const units = order.side === "buy" ? Number(fill?.qtyOut) : entryNotionalUsd / entryPx;
+      if (!(units > 0)) {
         skipped.push({ ...ctx, reason: "no entry fill" });
         continue;
       }
@@ -66,6 +75,7 @@ export function paperPositions(store) {
         contraAsset: order.contraAsset,
         units,
         entryPx,
+        entryNotionalUsd,
       });
     }
   }
@@ -93,11 +103,11 @@ export async function markPosition(position, { apiKey, fetchImpl = fetch }) {
     });
     const proceedsUsd = Number(q?.to?.notional);
     if (!(proceedsUsd > 0)) throw blotterError("live quote unusable (no to.notional)");
-    const costUsd = position.units * position.entryPx;
+    const costUsd = position.entryNotionalUsd;
     const markPx = proceedsUsd / position.units;
     return { markPx, pnlUsd: proceedsUsd - costUsd, pnlPct: (proceedsUsd - costUsd) / costUsd };
   }
-  const entryProceedsUsd = position.units * position.entryPx;
+  const entryProceedsUsd = position.entryNotionalUsd;
   const q = await getQuote({
     apiKey,
     orderRequest: { ...base, side: "buy", qty: String(entryProceedsUsd) },
@@ -152,7 +162,7 @@ export async function updateBlotter({ storePath, blotterPath, fetchImpl = fetch 
   }
   const totalPnlUsd = round2(marked.reduce((a, m) => a + m.pnlUsd, 0));
   const snapshot = {
-    snapshotId: `blotter-${ts.replace(/[:.]/g, "")}`,
+    snapshotId: `blotter-${ts.replace(/[:.]/g, "")}-${crypto.randomBytes(4).toString("hex")}`,
     ts,
     disclaimer: BLOTTER_DISCLAIMER,
     venue: "paper",

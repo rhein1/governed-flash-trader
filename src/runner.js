@@ -17,6 +17,7 @@
 import fs from "node:fs";
 import { validateSignal } from "./signal.js";
 import { followSignal } from "./follower.js";
+import { updateBlotter } from "./blotter.js";
 import { loadStore, saveStore, recordDecision, isConsumed } from "./store.js";
 import { createPaperClient } from "./paper.js";
 import { getQuote, submitOrder } from "./flash.js";
@@ -197,4 +198,28 @@ export async function runPass({
   }
   saveStoreWithRunner(storePath, store);
   return summary;
+}
+
+// One blotter mark-to-market step. Never throws: a failed live quote is
+// reported through onEvent as blotter_error so a bad network day can't
+// kill the runner. Note: this is the one runner feature that makes outbound
+// HTTPS calls (read-only quotes) even in paper mode; it is strictly opt-in
+// via --blotter.
+export async function runBlotterStep({ storePath, blotterPath, fetchImpl = fetch, onEvent = null }) {
+  try {
+    const snapshot = await updateBlotter({ storePath, blotterPath, fetchImpl });
+    const summary = {
+      event: "blotter",
+      positions: snapshot.totals.positions,
+      totalPnlUsd: snapshot.totals.totalPnlUsd,
+      skipped: snapshot.skipped.length,
+      snapshotId: snapshot.snapshotId,
+    };
+    if (onEvent) await onEvent(summary);
+    return summary;
+  } catch (err) {
+    const summary = { event: "blotter_error", error: `${err.code ?? "UNKNOWN"}: ${err.message}` };
+    if (onEvent) await onEvent(summary);
+    return summary;
+  }
 }

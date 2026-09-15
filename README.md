@@ -229,8 +229,19 @@ No key of yours is needed: the blotter defaults to Definitive's published
 public dev key (the same one the official `@definitive-fi/flash-mcp` server
 uses when no key is configured — quote-only, rate-limited, cannot trade);
 set `FLASH_API_KEY` to use your own. Run it on a cadence (e.g. every 15 min
-alongside the runner) to build a mark-to-market track record. Paper fills,
-real prices, zero dollars moved — the labels say exactly that.
+alongside the runner) to build a mark-to-market track record — or let the
+runner do it:
+
+```bash
+# Continuous mode with mark-to-market after every pass (--blotter is
+# strictly opt-in: it is the only runner feature that makes outbound
+# network calls in paper mode, and only read-only quotes):
+node bin/gft-runner.js --mandate mandate.json --interval 60 --blotter ./blotter.jsonl
+```
+
+A failed quote marks the position `skipped` and logs `blotter_error`; it
+never kills the runner. Paper fills, real prices, zero dollars moved — the
+labels say exactly that.
 
 ## X post
 
@@ -262,7 +273,7 @@ vendor/
 a2a/
   agent-card.json  A2A protocol v0.3.0 leader agent card
 bin/gft.js     CLI: demo [personas] | leader publish | follower follow | feed | receipts | blotter update
-bin/gft-runner.js  continuous runner, with optional --a2a-port A2A surface
+bin/gft-runner.js  continuous runner: --a2a-port A2A surface, --blotter mark-to-market
 test/          69 tests (node:test; no test frameworks, no npm test deps)
 examples/      sample signal + mandate
 ```

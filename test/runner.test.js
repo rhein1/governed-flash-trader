@@ -9,7 +9,9 @@ import os from "node:os";
 import path from "node:path";
 import {
   runPass,
+  runBlotterStep,
   loadStoreWithRunner,
+  saveStoreWithRunner,
   createClient,
   readFeedTolerant,
   blankRunnerState,
@@ -190,5 +192,106 @@ describe("blankRunnerState", () => {
     const s = blankRunnerState();
     assert.equal(s.lastSignalId, null);
     assert.equal(s.stats.processed, 0);
+  });
+});
+
+describe("runBlotterStep", () => {
+  const stubFetch = (body) => async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(body),
+  });
+
+  // Minimal settled paper receipt: LONG 0.125 WETH @ $2000 = $250 notional.
+  const settledReceipt = () => ({
+    receiptId: "rcpt-b1",
+    signalId: "sig-b1",
+    leaderId: "leader-mara",
+    followerId: "follower-finch",
+    mode: "paper",
+    outcome: "settled",
+    stages: {
+      submission: {
+        status: "submitted",
+        orders: [{
+          orderType: "market",
+          side: "buy",
+          targetChain: "base",
+          contraChain: "base",
+          targetAsset: WETH,
+          contraAsset: USDC,
+          qty: "250",
+          quoteId: "paper-quote-1",
+          orderId: "paper-order-1",
+        }],
+      },
+      settlement: {
+        status: "settled",
+        fills: [{
+          orderId: "paper-order-1",
+          status: "ORDER_STATUS_FILLED",
+          fills: [{ fillId: "f1", price: "2000.0000", qtyOut: "0.125" }],
+        }],
+      },
+    },
+  });
+
+  const writeStoreWithReceipt = () => {
+    const store = loadStoreWithRunner(storePath());
+    store.receipts = [settledReceipt()];
+    saveStoreWithRunner(storePath(), store);
+  };
+
+  it("marks positions, appends a snapshot, and reports totals", async () => {
+    writeStoreWithReceipt();
+    const blotter = path.join(dir, "blotter.jsonl");
+    const events = [];
+    const summary = await runBlotterStep({
+      storePath: storePath(),
+      blotterPath: blotter,
+      fetchImpl: stubFetch({ to: { asset: "contra", amount: "312.5", notional: "312.50" } }),
+      onEvent: (e) => events.push(e),
+    });
+    assert.equal(summary.event, "blotter");
+    assert.equal(summary.positions, 1);
+    assert.equal(summary.totalPnlUsd, 62.5); // 312.50 - 250
+    assert.equal(events.length, 1);
+    const lines = fs.readFileSync(blotter, "utf8").trim().split("\n");
+    assert.equal(lines.length, 1);
+    const snap = JSON.parse(lines[0]);
+    assert.ok(snap.disclaimer.includes("no real funds moved"));
+    assert.equal(snap.venue, "paper");
+    assert.equal(snap.totals.totalPnlUsd, 62.5);
+  });
+
+  it("never throws: a corrupt store becomes blotter_error, not a crash", async () => {
+    fs.writeFileSync(storePath(), "{not json");
+    const events = [];
+    const summary = await runBlotterStep({
+      storePath: storePath(),
+      blotterPath: path.join(dir, "blotter.jsonl"),
+      fetchImpl: stubFetch({}),
+      onEvent: (e) => events.push(e),
+    });
+    assert.equal(summary.event, "blotter_error");
+    assert.ok(summary.error.length > 0);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].event, "blotter_error");
+  });
+
+  it("a dead quote endpoint marks the position skipped, still appends", async () => {
+    writeStoreWithReceipt();
+    const blotter = path.join(dir, "blotter.jsonl");
+    const summary = await runBlotterStep({
+      storePath: storePath(),
+      blotterPath: blotter,
+      fetchImpl: async () => { throw new Error("network down"); },
+    });
+    assert.equal(summary.event, "blotter");
+    assert.equal(summary.positions, 0);
+    assert.equal(summary.skipped, 1);
+    const snap = JSON.parse(fs.readFileSync(blotter, "utf8").trim());
+    assert.equal(snap.skipped.length, 1);
+    assert.ok(snap.skipped[0].reason.includes("network down"));
   });
 });

@@ -3,9 +3,15 @@
 //
 //   node bin/gft-runner.js --mandate m.json [--feed feed.jsonl] [--store store.json]
 //       [--interval 30] [--live] [--once] [--log runner.log.jsonl] [--a2a-port 8787]
+//       [--blotter [blotter.jsonl]]
 //
 //   node bin/gft-runner.js --a2a-port 8787 [--feed feed.jsonl]
 //       # serve-only: just the local A2A leader surface, no following
+//
+//   --blotter is opt-in mark-to-market: after every pass, settled paper
+//   positions are marked against live Flash quotes (read-only) and a
+//   snapshot is appended to the blotter JSONL. It is the only runner
+//   feature that makes outbound network calls in paper mode.
 //
 // Tails the leader JSONL feed and runs the governed followSignal() pipeline
 // for every new signal. Paper mode is the default (zero credentials, zero
@@ -23,12 +29,22 @@ import {
   saveStoreWithRunner,
   createClient,
   runPass,
+  runBlotterStep,
 } from "../src/runner.js";
 import { serveA2A } from "../src/a2a.js";
 
 function arg(name, def = null) {
   const i = process.argv.indexOf(name);
   return i === -1 ? def : process.argv[i + 1];
+}
+// arg value that isn't fooled by a following flag: --blotter --once means
+// the flag was given without a path, so fall back to the default.
+function argPath(name, def) {
+  const i = process.argv.indexOf(name);
+  if (i === -1) return null; // flag absent
+  const v = process.argv[i + 1];
+  if (v === undefined || v.startsWith("--")) return def;
+  return v;
 }
 const has = (name) => process.argv.includes(name);
 
@@ -46,6 +62,10 @@ const logPath = arg("--log", "./runner.log.jsonl");
 const intervalSec = Math.max(1, Number(arg("--interval", "30")) || 30);
 const once = has("--once");
 const live = has("--live");
+// Opt-in mark-to-market: after every pass, mark settled paper positions
+// against live Flash quotes. This is the only runner feature that makes
+// outbound network calls in paper mode (read-only quotes).
+const blotterPath = argPath("--blotter", "./blotter.jsonl");
 
 let shuttingDown = false;
 const requestShutdown = () => {
@@ -114,6 +134,7 @@ async function main() {
     intervalSec,
     once,
     serveOnly,
+    blotter: blotterPath,
     a2aUrl: a2a?.url ?? null,
     lastSignalId: store.runner.lastSignalId,
   });
@@ -130,6 +151,9 @@ async function main() {
         onSignal: (outcome) => logLine({ event: "signal", ...outcome }),
       });
       logLine({ event: "pass", ...summary, lastSignalId: store.runner.lastSignalId });
+    }
+    if (blotterPath) {
+      await runBlotterStep({ storePath, blotterPath, onEvent: (e) => logLine(e) });
     }
     if (once || shuttingDown) break;
     await interruptibleSleep(intervalSec * 1000);

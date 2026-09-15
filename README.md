@@ -1,6 +1,6 @@
 # governed-flash-trader
 
-A **governed social/copy-trading agent** on [Definitive Flash](https://ddp.definitive.fi).
+A **governed social/copy-trading agent** on [Definitive Flash](https://www.definitive.fi/flash-api).
 Followers don't hand a leader a blank check — they issue a **bounded mandate**
 (asset allowlist, per-trade and per-day spend caps, mandatory stop-loss, expiry
 window), and every copied signal passes a **fork-before-risk gate** before any
@@ -47,9 +47,11 @@ node bin/gft.js receipts --store ./store.json
                          │      │                                   │
                          │     yes                                  │
                          │      ▼                                   │
-                         │ 3. quote (Flash REST)                    │
-                         │ 4. sign (HMAC request auth)              │
-                         │ 5. submit (Flash REST)                   │
+                         │ 3. quote (Flash v1 REST, live market data)   │
+                         │ 4. sign (x-definitive-api-key header)      │
+                         │ 5. submit (paper: simulated; live:         │
+                         │    quote-only — submission needs a funder  │
+                         │    wallet this build does not hold)        │
                          │ 6. settled receipt                       │
                          └──────────────────────────────────────────┘
 ```
@@ -77,26 +79,25 @@ and receipts are recorded atomically. A replayed signal id blocks as
 
 ## Flash advanced orders
 
-The agent uses Definitive Flash's documented Portfolio REST API
-(`POST /v2/portfolio/trade/quote` → `POST /v2/portfolio/trade`), authenticated
-with HMAC-SHA256 request signatures
-(`x-definitive-api-key`, `x-definitive-timestamp`, `x-definitive-signature`),
-per the [request authorization docs](https://ddp.definitive.fi/request-authorization).
+The agent uses Definitive Flash's v1 API (`POST https://flash.definitive.fi/v1/quote`),
+authenticated with a single `x-definitive-api-key` header (`dpka_…`) — no HMAC,
+no secret. Verified 2026-09-15 against the live API and Definitive's official
+`@definitive-fi/flash-mcp` client.
 
 Supported leader strategies and their Flash order types:
 
-| signal strategy | Flash order type | notes |
-|-----------------|------------------|-------|
+| signal strategy | Flash orderType | v1 params |
+|-----------------|-----------------|-----------|
 | market          | `market`         | immediate execution |
-| limit           | `limit`          | `limit.price` + notional qty |
-| twap            | `twap`           | `durationSeconds` + optional `targetTWAPBuckets` |
-| stop            | `stop`           | stop-buy entry, `trigger` + optional `limit` |
-| stop-loss       | `stop-loss`      | protective exit, sell side |
-| take-profit     | `take-profit`    | profit exit, sell side |
-| bracket         | `bracket`        | `orderTrigger` with stop-loss + take-profit legs |
-| dca             | orchestrated     | **not a native REST `type`**: executed as N governed limit-order legs, each leg independently quoted, gated, and receipted |
+| limit           | `limit`          | `limitNotionalPrice` (USD) |
+| twap            | `twap`           | `durationSeconds` (min 300) + optional `twapBucketCount` |
+| stop            | `stop`           | stop-buy entry, `triggers: [{notionalPrice, triggerType}]` + optional `limitNotionalPrice` |
+| stop-loss       | `stop-loss`      | protective exit, sell side, `triggers: [{notionalPrice, triggerType: "lower"}]` |
+| take-profit     | `take-profit`    | profit exit, sell side, `triggers: [{notionalPrice, triggerType: "upper"}]` |
+| bracket         | `bracket`        | up to two triggers: lower stop-loss + upper take-profit |
+| dca             | orchestrated     | **not a native v1 `orderType`**: executed as N governed limit-order legs, each leg independently quoted, gated, and receipted |
 
-DCA honesty note: Flash's REST quote API documents `market`, `limit`,
+DCA honesty note: Flash's v1 quote API documents `market`, `limit`,
 `twap`, `stop`, `stop-loss`, `take-profit`, and `bracket`. DCA exists as a
 platform feature, not as a REST order type, so a `dca` signal expands into N
 limit-order legs under one receipt — every leg still passes the gate and gets
@@ -125,13 +126,20 @@ support — nine check families total, all reported per-check on the receipt.
 
 ## Live setup
 
-Live mode is **opt-in and fail-closed**:
+Live mode is **opt-in, fail-closed, and quote-only**:
 
-1. Copy `.env.example` to `.env` and set `FLASH_API_KEY` and `FLASH_API_SECRET`
-   (from your Definitive Flash account — never commit them).
+1. Copy `.env.example` to `.env` and set `FLASH_API_KEY` (from your Definitive
+   account: API Keys → Create a new key → Access Type = Flash — never commit it).
+   The key alone can only request quotes; it cannot move funds.
 2. Pass `--live` explicitly. Without it, everything runs in paper mode.
-3. Without credentials, the client **refuses to sign** (`FLASH_CREDENTIALS_REFUSED`)
+3. Without a real key, the client **refuses** (`FLASH_CREDENTIALS_REFUSED`)
    before any network call.
+4. Submission stays disabled in this build: Flash's `POST /v1/order` requires a
+   funder wallet signature this project does not hold, so live `submitOrder`
+   refuses (`LIVE_SUBMIT_UNAVAILABLE`) and the refusal is recorded as a
+   submission-stage receipt. Live mode therefore runs the mandate gate against
+   **real market quotes** — including live pricing for TWAP, stop-loss, and the
+   other advanced order types — without any possibility of moving funds.
 
 ```bash
 node bin/gft.js follower follow --signal s.json --mandate m.json --store store.json --live
@@ -140,7 +148,7 @@ node bin/gft.js follower follow --signal s.json --mandate m.json --store store.j
 Live DCA signals must carry an explicit `params.limitPrice` — paper mode may
 fall back to its deterministic reference price, but live mode will not invent a
 price. No trades, funding, or wallet operations happen in this repo's paper
-path; live execution is the owner's explicit, credentialed action.
+path; live quotes are the owner's explicit, credentialed action.
 
 ## X post
 
@@ -154,14 +162,14 @@ src/
   signal.js    leader signal model + validation + canonical form
   mandate.js   follower mandate model + validation
   gate.js      pure fork-before-risk mandate gate (no I/O, no authority)
-  flash.js     Definitive Flash REST client (HMAC auth, quote/submit, order builders)
+  flash.js     Definitive Flash v1 REST client (api-key header, quote/status/cancel, order builders)
   paper.js     deterministic paper venue (same client interface, zero network)
   leader.js    signal publishing to a local JSONL feed
   follower.js  follow pipeline: gate -> quote -> sign -> submit -> receipt
   receipts.js  four-stage receipts + not_submitted evidence
   store.js     idempotency + spend store (atomic JSON)
 bin/gft.js     CLI: demo | leader publish | follower follow | feed | receipts
-test/          40 tests (node:test, zero dependencies)
+test/          45 tests (node:test, zero dependencies)
 examples/      sample signal + mandate
 ```
 

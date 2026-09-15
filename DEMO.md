@@ -79,10 +79,10 @@ moved.**
 
 ## Behind the scenes
 
-- `npm test` — 40 tests: gate bounds, stop-loss enforcement, replay
-  idempotency, blocked-trades-make-zero-Flash-calls (spy client), and an
-  openssl-verified HMAC signing vector.
+- `npm test` — 45 tests: gate bounds, stop-loss enforcement, replay
+  idempotency, blocked-trades-make-zero-Flash-calls (spy client), v1 header
+  auth + credential guardrails, and every advanced order type's v1 shape.
 - `node bin/gft.js receipts --store ./store.json` — inspect receipts from a
   manual run.
-- Live mode (`--live` + `FLASH_API_KEY`/`FLASH_API_SECRET`) is fail-closed and
+- Live mode (`--live` + `FLASH_API_KEY`) is fail-closed, quote-only, and
   untouched by this demo — paper is the default.

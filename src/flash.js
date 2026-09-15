@@ -1,75 +1,77 @@
-// Definitive Flash REST client.
+// Definitive Flash REST client (v1).
 //
-// Implements the documented auth + order flow verbatim:
-//   https://ddp.definitive.fi/request-authorization
-//   https://ddp.definitive.fi/api/trade/quote
-//   https://ddp.definitive.fi/api/trade/submit
+// Verified 2026-09-15 against the live API and Definitive's official
+// @definitive-fi/flash-mcp client (github.com/DefinitiveCo/flash-mcp):
+//   base:   https://flash.definitive.fi/v1
+//   auth:   `x-definitive-api-key: dpka_…` header only — no HMAC, no secret.
+//   quote:  POST /quote
+//   status: GET  /orders/{orderId}
+//   cancel: POST /orders/{orderId}/cancel
 //
-// Flow: build externalOrderRequest -> POST /v2/portfolio/trade/quote
-//    -> POST /v2/portfolio/trade { externalOrderRequest, quoteId } -> { orderId }
-// Flash handles gas, nonces, MEV protection and retries; the client only
-// submits intents.
+// Quote fields: targetChain, contraChain, targetAsset, contraAsset, side
+// ("buy"|"sell"), qty (decimal string; spent units — contraAsset units for
+// buys, targetAsset units for sells), orderType one of market | limit | twap |
+// stop | stop-loss | take-profit | bracket.
+// Advanced params: limitNotionalPrice (USD limit price, required for limit),
+// durationSeconds + twapBucketCount (twap), triggers[] of
+// {notionalPrice, triggerType: "upper"|"lower"} max 2 (stop / stop-loss /
+// take-profit / bracket), expireTime (ISO-8601, for limit/trigger orders).
+//
+// Live submission is intentionally unavailable in this build: POST /order
+// requires funderAddress + userSignature + evmOrderTypedData produced by a
+// locally signing wallet, and this project holds no wallet and never will
+// without the owner's explicit setup. Live mode therefore runs the mandate
+// gate against REAL quotes (live market data, live advanced-order pricing)
+// and refuses to submit. Paper mode (the default) simulates the full
+// quote -> submit pipeline with zero credentials.
 
-import crypto from "node:crypto";
+export const FLASH_BASE_URL = "https://flash.definitive.fi/v1";
+export const QUOTE_PATH = "/quote";
+export const ORDER_PATH = "/order";
+export const orderStatusPath = (orderId) => `/orders/${encodeURIComponent(orderId)}`;
+export const orderCancelPath = (orderId) => `/orders/${encodeURIComponent(orderId)}/cancel`;
 
-export const FLASH_BASE_URL = "https://ddp.definitive.fi";
-export const QUOTE_PATH = "/v2/portfolio/trade/quote";
-export const SUBMIT_PATH = "/v2/portfolio/trade";
+export const ORDER_TYPES = Object.freeze([
+  "market",
+  "limit",
+  "twap",
+  "stop",
+  "stop-loss",
+  "take-profit",
+  "bracket",
+]);
 
-function hmacSha256Hex(secretNoPrefix, message) {
-  return crypto.createHmac("sha256", secretNoPrefix).update(message).digest("hex");
+function credentialsRefused() {
+  const err = new Error("flash client refuses: missing or placeholder FLASH_API_KEY");
+  err.code = "FLASH_CREDENTIALS_REFUSED";
+  return err;
 }
 
-// Documented prehash:
-//   `${method}:${path}?${queryParamsString}:${timestamp}:${sortedHeaders}${bodyString}`
-// sortedHeaders = x-definitive-* headers sorted, `key:${JSON.stringify(value)}`, joined by ","
-export function preparePrehash({ method, path, timestamp, headers, queryParams = {}, body }) {
-  const filtered = Object.entries(headers)
-    .filter(([key]) => key.toLowerCase().startsWith("x-definitive-"))
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([key, value]) => `${key}:${JSON.stringify(value)}`)
-    .join(",");
-  const queryParamsString = new URLSearchParams(queryParams).toString();
-  const bodyString = body ?? "";
-  return `${method}:${path}?${queryParamsString}:${timestamp}:${filtered}${bodyString}`;
-}
-
-export function signRequest({ apiKey, apiSecret, method, path, queryParams = {}, body, timestamp }) {
-  // Fail closed: never sign with missing or placeholder credentials.
-  if (
-    !apiKey ||
-    !apiSecret ||
-    /REPLACE_ME/i.test(String(apiKey)) ||
-    /REPLACE_ME/i.test(String(apiSecret))
-  ) {
-    const err = new Error("flash client refuses to sign: missing or placeholder API credentials");
-    err.code = "FLASH_CREDENTIALS_REFUSED";
-    throw err;
+// Fail closed: never touch the network without a real key.
+export function assertApiKey(apiKey) {
+  if (!apiKey || /REPLACE_ME/i.test(String(apiKey)) || /^(sk|test|example)/i.test(String(apiKey).trim())) {
+    throw credentialsRefused();
   }
-  const ts = timestamp ?? Date.now().toString();
-  const headers = {
-    "x-definitive-api-key": apiKey,
-    "x-definitive-timestamp": ts,
-  };
-  const bodyString = JSON.stringify(body);
-  const prehash = preparePrehash({ method, path, timestamp: ts, headers, queryParams, body: bodyString });
-  const secret = String(apiSecret).replace(/^dpks_/, "");
-  const signature = hmacSha256Hex(secret, prehash);
-  return { headers: { ...headers, "x-definitive-signature": signature }, prehash, signature };
+  return String(apiKey);
 }
 
-export async function signedFetch({ apiKey, apiSecret, method, path, queryParams = {}, body, fetchImpl = fetch }) {
-  const { headers } = signRequest({ apiKey, apiSecret, method, path, queryParams, body });
-  const qs = new URLSearchParams(queryParams).toString();
-  const url = `${FLASH_BASE_URL}${path}${qs ? `?${qs}` : ""}`;
-  const res = await fetchImpl(url, {
+export async function apiFetch({ apiKey, method, path, body, fetchImpl = fetch }) {
+  const key = assertApiKey(apiKey);
+  const res = await fetchImpl(`${FLASH_BASE_URL}${path}`, {
     method,
-    headers: { ...headers, "content-type": "application/json" },
+    headers: { "x-definitive-api-key": key, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const json = await res.json().catch(() => ({}));
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text.length ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
   if (!res.ok) {
-    const err = new Error(`flash ${method} ${path} failed: ${res.status} ${json.message ?? ""}`.trim());
+    const msg = json?.error?.message ?? json?.message ?? text.slice(0, 300);
+    const err = new Error(`flash ${method} ${path} failed: ${res.status} ${msg}`.trim());
     err.code = "FLASH_REQUEST_FAILED";
     err.status = res.status;
     err.body = json;
@@ -78,79 +80,110 @@ export async function signedFetch({ apiKey, apiSecret, method, path, queryParams
   return json;
 }
 
-// Map a leader signal to Flash's documented externalOrderRequest shape.
-// DCA is a platform feature (not a REST `type`): we execute it as N legs,
-// each leg an independent quote->submit of the leg's order type (default limit).
+// Map a leader signal to a Flash v1 quote request. DCA is not a native v1
+// orderType: the leader's schedule expands to N governed limit legs, each an
+// independent quote request (the follower quotes/submits each leg in turn).
 export function buildOrderRequest(signal, { referencePriceUsd = null } = {}) {
   const base = {
-    chain: signal.chain,
+    targetChain: signal.chain,
+    contraChain: signal.contraChain ?? signal.chain,
     targetAsset: signal.targetAsset,
     contraAsset: signal.contraAsset,
-    qty: String(signal.notionalUsd), // notional legs; qty semantics documented per-venue
-    orderSide: signal.orderSide,
-    slippageTolerance: "0.01",
+    side: signal.orderSide,
+    // Buys spend contraAsset units; sells spend targetAsset units. A sell
+    // signal carries notionalUsd, so qty is the notional and the venue prices
+    // it — documented simplification, never silently converted.
+    qty: String(signal.notionalUsd),
+    maxSlippage: "0.01",
     maxPriceImpact: "0.01",
   };
   const p = signal.params ?? {};
+  const expireTime = p.expireTime ? { expireTime: String(p.expireTime) } : {};
 
   switch (signal.strategy) {
     case "limit":
       if (!p.limitPrice) throw orderError("limit strategy needs params.limitPrice");
-      return { ...base, type: "limit", limit: { price: String(p.limitPrice), isNotional: true } };
-    case "twap":
       return {
         ...base,
-        type: "twap",
-        durationSeconds: Number(p.durationSeconds ?? 3600),
-        ...(p.targetTWAPBuckets ? { targetTWAPBuckets: Number(p.targetTWAPBuckets) } : {}),
+        orderType: "limit",
+        limitNotionalPrice: String(p.limitPrice),
+        ...expireTime,
       };
-    case "stop": // stop-buy entry
+    case "twap": {
+      const durationSeconds = Number(p.durationSeconds ?? 3600);
+      if (!Number.isFinite(durationSeconds) || durationSeconds < 300) {
+        throw orderError("twap strategy needs params.durationSeconds >= 300");
+      }
+      return {
+        ...base,
+        orderType: "twap",
+        durationSeconds,
+        ...(p.twapBucketCount ? { twapBucketCount: Number(p.twapBucketCount) } : {}),
+      };
+    }
+    case "stop": {
+      // Stop-buy entry: trigger fires when price moves up through the level.
       if (!p.triggerPrice) throw orderError("stop strategy needs params.triggerPrice");
       return {
         ...base,
-        type: "stop",
-        triggerType: p.triggerType === "lower" ? "lower" : "upper",
-        trigger: { price: String(p.triggerPrice), isNotional: true },
-        ...(p.limitPrice ? { limit: { price: String(p.limitPrice), isNotional: true } } : {}),
+        orderType: "stop",
+        triggers: [
+          {
+            notionalPrice: String(p.triggerPrice),
+            triggerType: p.triggerType === "lower" ? "lower" : "upper",
+          },
+        ],
+        ...(p.limitPrice ? { limitNotionalPrice: String(p.limitPrice) } : {}),
+        ...expireTime,
       };
+    }
     case "stop-loss":
       if (signal.orderSide !== "sell") throw orderError("stop-loss orders must be sell side");
       if (!p.triggerPrice) throw orderError("stop-loss strategy needs params.triggerPrice");
       return {
         ...base,
-        type: "stop-loss",
-        trigger: { price: String(p.triggerPrice), isNotional: true },
-        ...(p.limitPrice ? { limit: { price: String(p.limitPrice), isNotional: true } } : {}),
+        orderType: "stop-loss",
+        triggers: [{ notionalPrice: String(p.triggerPrice), triggerType: "lower" }],
+        ...(p.limitPrice ? { limitNotionalPrice: String(p.limitPrice) } : {}),
+        ...expireTime,
       };
     case "take-profit":
       if (signal.orderSide !== "sell") throw orderError("take-profit orders must be sell side");
       if (!p.triggerPrice) throw orderError("take-profit strategy needs params.triggerPrice");
       return {
         ...base,
-        type: "take-profit",
-        trigger: { price: String(p.triggerPrice), isNotional: true },
-        ...(p.limitPrice ? { limit: { price: String(p.limitPrice), isNotional: true } } : {}),
+        orderType: "take-profit",
+        triggers: [{ notionalPrice: String(p.triggerPrice), triggerType: "upper" }],
+        ...(p.limitPrice ? { limitNotionalPrice: String(p.limitPrice) } : {}),
+        ...expireTime,
       };
     case "bracket": {
+      // Bracket = up to two triggers on one order: a lower stop-loss and an
+      // upper take-profit. v1 expresses this via the triggers array (max 2).
       const legs = Array.isArray(p.bracketLegs) ? p.bracketLegs : [];
-      if (legs.length === 0) throw orderError("bracket strategy needs params.bracketLegs[]");
+      if (legs.length === 0 || legs.length > 2) {
+        throw orderError("bracket strategy needs params.bracketLegs[1..2]");
+      }
       return {
         ...base,
-        type: "bracket",
-        orderTrigger: {
-          type: "Trigger_StopBracket",
-          limits: legs.map((l) => ({
-            price: String(l.price),
-            baseAsset: signal.targetAsset,
-            quoteAsset: null,
-            isLower: l.kind === "stop-loss",
-          })),
-        },
+        orderType: "bracket",
+        triggers: legs.map((l) => {
+          if (!l.price || (l.kind !== "stop-loss" && l.kind !== "take-profit")) {
+            throw orderError("bracket legs need {price, kind: stop-loss|take-profit}");
+          }
+          return {
+            notionalPrice: String(l.price),
+            triggerType: l.kind === "stop-loss" ? "lower" : "upper",
+          };
+        }),
+        ...expireTime,
       };
     }
     case "dca": {
-      // DCA as orchestrated legs: the leader's schedule, each leg a limit order.
       const legs = Number(p.dcaLegs ?? 4);
+      if (!Number.isInteger(legs) || legs < 2 || legs > 24) {
+        throw orderError("dca strategy needs params.dcaLegs as an integer 2..24");
+      }
       const perLeg = (Number(signal.notionalUsd) / legs).toFixed(2);
       return {
         dcaLegs: Array.from({ length: legs }, (_, i) => ({
@@ -159,18 +192,16 @@ export function buildOrderRequest(signal, { referencePriceUsd = null } = {}) {
           orderRequest: {
             ...base,
             qty: perLeg,
-            type: "limit",
-            limit: {
-              price: String(p.limitPrice ?? referencePriceUsd ?? "0"),
-              isNotional: true,
-            },
+            orderType: "limit",
+            limitNotionalPrice: String(p.limitPrice ?? referencePriceUsd ?? "0"),
+            ...expireTime,
           },
         })),
       };
     }
     case "market":
     default:
-      return { ...base, type: "market" };
+      return { ...base, orderType: "market" };
   }
 }
 
@@ -180,17 +211,30 @@ function orderError(msg) {
   return err;
 }
 
-export async function getQuote({ apiKey, apiSecret, orderRequest, fetchImpl }) {
-  return signedFetch({ apiKey, apiSecret, method: "POST", path: QUOTE_PATH, body: orderRequest, fetchImpl });
+// Read-only: prices an order request against live markets. No wallet, no
+// signing, no funds movement — the key alone cannot trade.
+export async function getQuote({ apiKey, orderRequest, fetchImpl }) {
+  return apiFetch({ apiKey, method: "POST", path: QUOTE_PATH, body: orderRequest, fetchImpl });
 }
 
-export async function submitOrder({ apiKey, apiSecret, orderRequest, quoteId, fetchImpl }) {
-  return signedFetch({
-    apiKey,
-    apiSecret,
-    method: "POST",
-    path: SUBMIT_PATH,
-    body: { externalOrderRequest: orderRequest, quoteId },
-    fetchImpl,
-  });
+export async function getOrder({ apiKey, orderId, fetchImpl }) {
+  return apiFetch({ apiKey, method: "GET", path: orderStatusPath(orderId), fetchImpl });
+}
+
+export async function cancelOrder({ apiKey, orderId, fetchImpl }) {
+  return apiFetch({ apiKey, method: "POST", path: orderCancelPath(orderId), fetchImpl });
+}
+
+// Fail closed by design: live submission needs a funder wallet signature
+// (funderAddress + userSignature + evmOrderTypedData) and this build holds
+// no wallet. The interface is kept so the follower pipeline is structurally
+// identical in both modes; the refusal is recorded as a submission-stage
+// receipt, never silently skipped.
+export async function submitOrder() {
+  const err = new Error(
+    "live submit refused: no funder wallet configured — live mode is quote-only. " +
+      "Attach a signing wallet out-of-band to enable submission."
+  );
+  err.code = "LIVE_SUBMIT_UNAVAILABLE";
+  throw err;
 }

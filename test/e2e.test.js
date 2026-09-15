@@ -182,11 +182,11 @@ describe("live-mode protection attach (mock client, zero credentials)", () => {
       mode: "live",
       getFill: null,
       async getQuote(orderRequest) {
-        calls.push(["getQuote", orderRequest.type]);
+        calls.push(["getQuote", orderRequest.orderType]);
         return { quoteId: `live-q-${calls.length}` };
       },
       async submitOrder(orderRequest, quoteId) {
-        calls.push(["submitOrder", orderRequest.type, quoteId]);
+        calls.push(["submitOrder", orderRequest.orderType, quoteId]);
         return { orderId: `live-o-${calls.length}` };
       },
     };

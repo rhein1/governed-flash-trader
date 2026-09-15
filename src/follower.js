@@ -61,7 +61,7 @@ async function executeAllowed({ signal, mandate, gateResult, client, mode }) {
     if (!quoteId) throw new Error("quote returned no id");
     const { orderId } = await client.submitOrder(orderRequest, quoteId);
     const signatureId =
-      mode === "live" ? `hmac:${String(quoteId).slice(0, 18)}` : `paper-sig:${String(orderId).slice(-8)}`;
+      mode === "live" ? `apikey:${String(quoteId).slice(0, 18)}` : `paper-sig:${String(orderId).slice(-8)}`;
     const fill = client.getFill ? await client.getFill(orderRequest, quote, orderId) : null;
     legs.push({ orderRequest, quote, quoteId, orderId, signatureId, fill });
   }
@@ -130,7 +130,7 @@ async function attachLiveStopLoss({ signal, mandate, client, notionalUsd }) {
     quote,
     quoteId,
     orderId,
-    signatureId: `hmac:${String(quoteId).slice(0, 18)}`,
+    signatureId: `apikey:${String(quoteId).slice(0, 18)}`,
     fill: null,
     attachedProtection: {
       type: "stop-loss",

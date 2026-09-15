@@ -33,10 +33,9 @@ function readJson(p) {
 function liveClientOrRefuse() {
   if (!has("--live")) return { client: createPaperClient(), mode: "paper" };
   const apiKey = process.env.FLASH_API_KEY;
-  const apiSecret = process.env.FLASH_API_SECRET;
-  if (!apiKey || !apiSecret || apiKey.includes("REPLACE_ME")) {
+  if (!apiKey || apiKey.includes("REPLACE_ME")) {
     console.error(
-      "live mode refused: set FLASH_API_KEY and FLASH_API_SECRET (see .env.example). Paper mode needs nothing."
+      "live mode refused: set FLASH_API_KEY (see .env.example). Paper mode needs nothing."
     );
     process.exit(2);
   }
@@ -46,8 +45,11 @@ function liveClientOrRefuse() {
     // scope for the hackathon build; the quote+submit receipts still record
     // authorization -> signature -> submission separately.
     getFill: null,
-    getQuote: (orderRequest) => getQuote({ apiKey, apiSecret, orderRequest }),
-    submitOrder: (orderRequest, quoteId) => submitOrder({ apiKey, apiSecret, orderRequest, quoteId }),
+    getQuote: (orderRequest) => getQuote({ apiKey, orderRequest }),
+    // Live submit is quote-only in this build: src/flash.js submitOrder
+    // refuses without a funder wallet (LIVE_SUBMIT_UNAVAILABLE). The refusal
+    // is recorded as a submission-stage receipt, never silently skipped.
+    submitOrder: (orderRequest, quoteId) => submitOrder({ orderRequest, quoteId }),
   };
   return { client, mode: "live" };
 }

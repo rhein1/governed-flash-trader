@@ -73,13 +73,13 @@ export function mintSettledReceipt({ signal, mandate, gateResult, mode, executio
         signatures: execution.legs.map((l) => ({
           orderId: l.orderId,
           signatureId: l.signatureId,
-          scheme: mode === "live" ? "hmac-sha256/x-definitive-signature" : "paper-simulated",
+          scheme: mode === "live" ? "api-key/x-definitive-api-key" : "paper-simulated",
         })),
       }),
       submission: Object.freeze({
         status: "submitted",
         orders: execution.legs.map((l) => ({
-          orderType: l.orderRequest.type,
+          orderType: l.orderRequest.orderType,
           quoteId: l.quoteId,
           orderId: l.orderId,
         })),

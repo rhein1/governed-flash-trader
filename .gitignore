@@ -8,6 +8,11 @@ store.json
 receipts/
 *.log
 
+# track-record runtime data (the publisher script itself is committed)
+track-record/*.jsonl
+track-record/*.json
+track-record/*.log
+
 # deps / build
 node_modules/
 dist/

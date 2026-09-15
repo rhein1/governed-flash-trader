@@ -1,0 +1,16 @@
+# secrets — never commit
+.env
+.env.local
+
+# local runtime state
+feed.jsonl
+store.json
+receipts/
+*.log
+
+# deps / build
+node_modules/
+dist/
+
+# os
+.DS_Store

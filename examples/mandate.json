@@ -1,0 +1,1 @@
+{"assetAllowlist":[{"chain":"base","symbol":"WETH","targetAsset":"0x4200000000000000000000000000000000000006"}],"followerId":"follower-finch","leaderId":"leader-mara","maxSpendPerDayUsd":"1500","maxSpendPerTradeUsd":"500","requireProtection":true,"stopLossPct":5,"validFrom":"2026-09-01T00:00:00Z","validUntil":"2026-12-31T00:00:00Z"}
